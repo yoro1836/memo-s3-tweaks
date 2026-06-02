@@ -1,0 +1,54 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Clippy
+        working-directory: daemon
+        run: |
+          NDK=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          export CC_aarch64_linux_android=$NDK/aarch64-linux-android21-clang
+          export AR_aarch64_linux_android=$NDK/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/aarch64-linux-android21-clang
+          cargo clippy --release --target aarch64-linux-android -- -D warnings
+
+      - name: Build daemon
+        working-directory: daemon
+        run: |
+          NDK=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          export CC_aarch64_linux_android=$NDK/aarch64-linux-android21-clang
+          export AR_aarch64_linux_android=$NDK/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/aarch64-linux-android21-clang
+          cargo build --release --target aarch64-linux-android
+
+      - name: Package module zip
+        run: |
+          mkdir -p pkg/webroot pkg/plugins
+          cp daemon/target/aarch64-linux-android/release/keyforge pkg/
+          cp module/module.prop module/service.sh module/keyforge.sh pkg/
+          cp module/webroot/index.html pkg/webroot/
+          chmod 755 pkg/keyforge pkg/keyforge.sh pkg/service.sh
+          cd pkg && zip -r ../keyforge.zip . && cd ..
+          echo "Package: $(ls -lh keyforge.zip)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyforge
+          path: keyforge.zip

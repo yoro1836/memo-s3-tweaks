@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KeyForge</title>
+<style>
+:root{--bg:#0f0f0f;--card:#1a1a1a;--bdr:#2a2a2a;--tx:#e0e0e0;--dim:#888;--acc:#4da6ff;--grn:#4caf84;--red:#e0556a;--trk:#1a1a28}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--tx);padding:12px;min-height:100vh}
+.card{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:8px}
+.row{display:flex;align-items:center;gap:8px;min-height:34px}.row+.row{margin-top:4px}
+.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:.75rem;font-weight:600}
+.on{background:#14261e;color:var(--grn)}.off{background:#261414;color:var(--red)}
+.grow{flex:1}.mt4{margin-top:4px}.mt8{margin-top:8px}.dim{font-size:.75rem;color:var(--dim)}
+select{background:var(--bg);border:1px solid var(--bdr);border-radius:6px;color:var(--tx);padding:6px 8px;font-size:.8rem;flex:1;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+input[type=range]{-webkit-appearance:none;width:100%;height:4px;border-radius:2px;background:var(--trk);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--acc);border:2px solid var(--bg);cursor:pointer}
+.inp{background:var(--bg);border:1px solid var(--bdr);border-radius:5px;color:var(--tx);padding:4px 7px;font-size:.78rem;text-align:center;width:64px;font-variant-numeric:tabular-nums}
+.tgl{position:relative;width:42px;height:22px;flex-shrink:0}
+.tgl input{opacity:0;width:0;height:0}
+.tgl label{position:absolute;inset:0;background:var(--trk);border-radius:22px;cursor:pointer;transition:.2s}
+.tgl label::after{content:"";position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+.tgl input:checked+label{background:var(--acc)}
+.tgl input:checked+label::after{transform:translateX(20px)}
+.btn{border:none;border-radius:6px;padding:7px 14px;font-size:.8rem;font-weight:600;cursor:pointer;transition:opacity .15s}
+.btn:active{opacity:.7}.btn-a{background:var(--acc);color:#fff}.btn-o{background:transparent;border:1px solid var(--bdr);color:var(--tx)}
+.btn-g{background:var(--grn);color:#000}.btn-r{background:var(--red);color:#fff}
+.btn-sm{padding:4px 10px;font-size:.72rem}.btn-xs{padding:3px 8px;font-size:.68rem;border-radius:4px}
+.btn-grp{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+.plg{border-left:2px solid var(--bdr);padding-left:10px;margin:6px 0}
+.plg.on{border-left-color:var(--grn)}.plg.off{border-left-color:var(--red);opacity:.55}
+.tag{display:inline-block;background:var(--trk);border-radius:4px;padding:2px 6px;font-size:.7rem;color:var(--dim);margin:1px}
+.tag span{color:var(--red);cursor:pointer;margin-left:2px}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#2a2a3a;color:#fff;padding:8px 20px;border-radius:20px;font-size:.82rem;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="row">
+    <strong>KeyForge</strong>
+    <span id="badge" class="badge off">checking</span>
+    <span class="grow"></span>
+    <button class="btn btn-g btn-sm" onclick="daemon('start')">▶</button>
+    <button class="btn btn-r btn-sm" onclick="daemon('stop')">■</button>
+    <button class="btn btn-o btn-sm" onclick="daemon('restart')">↻</button>
+  </div>
+  <div class="dim" id="log">Ready.</div>
+  <div class="btn-grp"><button class="btn btn-o btn-xs" onclick="showLog()">📋 Show Log</button></div>
+  <pre id="logView" style="display:none;max-height:200px;overflow-y:auto;font-size:.7rem;color:var(--dim);background:var(--bg);padding:8px;margin-top:4px;border-radius:6px;white-space:pre-wrap;word-break:break-all"></pre>
+</div>
+
+<div class="card">
+  <div class="row">
+    <span class="dim">Plugins</span>
+    <span class="grow"></span>
+    <input type="file" id="filePick" accept=".lua" style="display:none" onchange="onFile()">
+    <button class="btn btn-a btn-sm" onclick="document.getElementById('filePick').click()">+ Add</button>
+    <button class="btn btn-a btn-sm" id="saveBtn" onclick="saveAll()">Save</button>
+  </div>
+  <div id="pluginList" class="mt4"></div>
+  <div id="installed" class="mt4"></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+var MODID='keyforge';
+var MODROOT='/data/user_de/0/com.android.shell/axeron/plugins/'+MODID;
+var SCR='sh '+MODROOT+'/keyforge.sh';
+var dirty=false;
+
+function toast(m){var e=document.getElementById('toast');e.textContent=m;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(function(){e.classList.remove('show')},2000);}
+function l(m){document.getElementById('log').textContent=m;}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function ub(){var t=dirty?'Save *':'Save';document.getElementById('saveBtn').textContent=t;}
+
+function exec(cmd){
+  try{
+    var r=Axeron.exec(cmd);
+    var o=JSON.parse(r);
+    return o.stdout||'';
+  }catch(e){}
+  return'';
+}
+
+function showLog(){
+  var v=document.getElementById('logView');
+  if(v.style.display==='none'){v.style.display='block';exec(SCR+' log').then(function(t){v.textContent=t;});}
+  else{v.style.display='none';}
+}
+
+function daemon(a){
+  var o=exec(SCR+' '+a);toast(o.trim().split('\n')[0]||a);
+  setTimeout(checkStatus,800);
+}
+function checkStatus(){
+  var o=exec(SCR+' status'),b=document.getElementById('badge');
+  if(o.indexOf('running')===0){b.textContent='running';b.className='badge on';}
+  else{b.textContent='stopped';b.className='badge off';}
+}
+
+function saveAll(){
+  var cs=document.querySelectorAll('.plg');
+  for(var i=0;i<cs.length;i++){
+    var is=cs[i].querySelectorAll('input[data-k]');
+    for(var j=0;j<is.length;j++){
+      var inp=is[j],val=inp.type==='checkbox'?(inp.checked?'1':'0'):inp.value;
+      exec(SCR+' config set '+inp.dataset.k+' '+val);
+    }
+  }
+  dirty=false;ub();toast('Saved');
+}
+
+function loadManifest(){
+  var o=exec(SCR+' manifest'),h='';
+  try{
+    var d=JSON.parse(o),pl=d.plugins||[];
+    if(!pl.length){h='<span class="dim">No plugins loaded</span>';}
+    for(var i=0;i<pl.length;i++){
+      var p=pl[i],cls=p.enabled?'on':'off';
+      h+='<div class="plg '+cls+'" id="plg-'+esc(p.id)+'">';
+      h+='<div class="row"><strong style="font-size:.85rem">'+esc(p.name)+'</strong><span class="dim">v'+esc(p.version)+'</span><span class="grow"></span>';
+      h+='<span class="tgl"><input type="checkbox" id="tgl-'+esc(p.id)+'"'+(p.enabled?' checked':'')+' onchange="tglP(\''+esc(p.id)+'\',this.checked)"><label for="tgl-'+esc(p.id)+'"></label></span>';
+      h+='</div>';
+      var ss=p.settings||[];
+      for(var j=0;j<ss.length;j++){
+        var s=ss[j];
+        h+='<div class="row"><span style="font-size:.76rem;min-width:52px;color:var(--dim)">'+esc(s.label)+'</span>';
+        if(s.kind==='toggle'){
+          h+='<span class="tgl"><input type="checkbox" data-k="'+esc(s.key)+'" id="st-'+esc(s.key)+'"'+(s.default==='1'?' checked':'')+' onchange="dirty=true;ub()"><label for="st-'+esc(s.key)+'"></label></span>';
+        }else if(s.kind==='permille'){
+          h+='<input type="number" class="inp" data-k="'+esc(s.key)+'" value="'+esc(s.default)+'" min="'+(s.min||0)+'" max="'+(s.max||1000)+'" onchange="this.nextElementSibling.value=this.value;dirty=true;ub()">';
+          h+='<input type="range" class="grow" data-k="'+esc(s.key)+'" min="'+(s.min||0)+'" max="'+(s.max||1000)+'" value="'+esc(s.default)+'" oninput="this.previousElementSibling.value=this.value;dirty=true;ub()">';
+        }else{
+          h+='<input type="number" class="inp" data-k="'+esc(s.key)+'" value="'+esc(s.default)+'" onchange="dirty=true;ub()">';
+        }
+        h+='</div>';
+      }
+      h+='</div>';
+    }
+  }catch(e){h='<span class="dim">Manifest unavailable</span>';}
+  document.getElementById('pluginList').innerHTML=h;
+}
+
+var pT={};
+function tglP(id,c){
+  pT[id]=c;exec(SCR+' config set plugin.'+id+' '+(c?1:0));
+  var e=document.getElementById('plg-'+id);
+  if(e){e.classList.toggle('on',c);e.classList.toggle('off',!c);}
+}
+
+function onFile(){
+  var fp=document.getElementById('filePick'),f=fp.files[0];if(!f)return;
+  if(f.name.slice(-4)!=='.lua'){toast('Only .lua files');fp.value='';return;}
+  var r=new FileReader();
+  r.onload=function(){
+    var a=new Uint8Array(r.result),b64='';for(var i=0;i<a.length;i++)b64+=String.fromCharCode(a[i]);
+    b64=btoa(b64);
+    exec('echo '+b64+' | base64 -d > '+MODROOT+'/plugins/'+f.name+' && '+SCR+' restart');
+    toast('Installed: '+f.name);setTimeout(function(){rfI();loadManifest();},1500);
+  };r.readAsArrayBuffer(f);fp.value='';
+}
+function rmP(id){exec(SCR+' plugins remove '+id);toast('Removed '+id);setTimeout(function(){rfI();loadManifest();},1500);}
+function rfI(){
+  var o=exec(SCR+' plugins list'),h='';
+  try{
+    var d=JSON.parse(o),pl=d.plugins||[];
+    if(!pl.length)h='<span class="dim">No plugins</span>';
+    else for(var i=0;i<pl.length;i++){h+='<span class="tag">'+esc(pl[i])+' <span onclick="rmP(\''+esc(pl[i])+'\')">✕</span></span> ';}
+  }catch(e){h='Failed';}
+  document.getElementById('installed').innerHTML=h;
+}
+
+loadManifest();rfI();checkStatus();
+setInterval(checkStatus,8000);setInterval(loadManifest,30000);
+</script>
+</body>
+</html>

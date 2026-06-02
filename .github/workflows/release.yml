@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Clippy
+        working-directory: daemon
+        run: |
+          NDK=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          export CC_aarch64_linux_android=$NDK/aarch64-linux-android21-clang
+          export AR_aarch64_linux_android=$NDK/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/aarch64-linux-android21-clang
+          cargo clippy --release --target aarch64-linux-android -- -D warnings
+
+      - name: Build daemon
+        working-directory: daemon
+        run: |
+          NDK=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          export CC_aarch64_linux_android=$NDK/aarch64-linux-android21-clang
+          export AR_aarch64_linux_android=$NDK/llvm-ar
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/aarch64-linux-android21-clang
+          cargo build --release --target aarch64-linux-android
+
+      - name: Upload daemon binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon
+          path: daemon/target/aarch64-linux-android/release/keyforge
+
+  apk:
+    needs: daemon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          else
+            VER="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VER" >> $GITHUB_OUTPUT
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Download daemon binary
+        uses: actions/download-artifact@v4
+        with:
+          name: daemon
+          path: app/src/main/assets/
+
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v3
+
+      - name: Restore keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: echo "$KEYSTORE_B64" | base64 -d > app/keyforge.jks
+
+      - name: Build Release APK
+        run: gradle assembleRelease
+        env:
+          ORG_GRADLE_PROJECT_KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+          ORG_GRADLE_PROJECT_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_KEY_PASS: ${{ secrets.KEY_PASS }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          files: app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true

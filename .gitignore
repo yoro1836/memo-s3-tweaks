@@ -1,0 +1,5 @@
+/daemon/target
+**/Cargo.lock
+*.zip
+.DS_Store
+/web/node_modules

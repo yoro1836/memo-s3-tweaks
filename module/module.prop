@@ -1,0 +1,7 @@
+id=keyforge
+name=KeyForge
+version=v1.0.0
+versionCode=100
+author=Yoro1836
+description=Lua-scriptable input automation
+axeronPlugin=1
