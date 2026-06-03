@@ -3,75 +3,124 @@
 Lua-scriptable input automation for Android. Intercept, transform, and emit
 evdev events at the kernel level — any key, any axis, any device.
 
-Like AutoHotkey, but runs through Shizuku with direct access to `/dev/input`.
+Like AutoHotkey, but runs as an [AX Manager](https://github.com/ktanon/AX-Manager) module
+with direct access to `/dev/input`.
 
 ## How It Works
 
-1. **KeyForge creates a virtual input device** via uinput — all keys and axes exposed
-2. **Your physical device is grabbed exclusively** — raw input goes through the pipeline
-3. **Lua plugins process every event** — modify, drop, or emit new ones
-4. **Transformed output goes to the virtual device** — any app sees it as real input
+1. **KeyForge creates a virtual controller** via uinput — mirrors your physical device's buttons and axes
+2. **Your physical device is grabbed exclusively** — raw input goes through the Lua pipeline
+3. **Lua plugins process every event** — modify stick curves, apply deadzones, remap buttons
+4. **Transformed output goes to the virtual device** — any app sees it as real controller input
 
 ## Features
 
-- **Lua pipeline** — chain plugins that see every stick, trigger, and button event
-- **Low-level API** — `pf.emit(type, code, value)` and `pf.drop()` for full control
-- **All 768 keys + 64 axes** — emit keyboard keys, mouse buttons, gamepad inputs, anything
-- **Native Android UI** — Compose + Material 3, Monet dynamic color, light/dark mode
-- **Device scanner** — auto-detect connected controllers via `getevent`
-- **Plugin manager** — install, remove, enable/disable `.lua` files
-- **Hot reload** — config changes apply without restart
-- **Shizuku-powered** — no root, just grant Shizuku permission once
+- **Lua pipeline** — chain plugins that process stick, trigger, and button events
+- **Plugin API** — `pf.emit(type, code, value)`, `pf.drop()`, `pf.log()` for full control
+- **Device mirroring** — copies physical device capabilities (keys, axes, absinfo) to virtual device
+- **WebUI** — device selector, plugin manager, per-plugin settings with live reload
+- **Hot reload** — config changes detected within 500ms, no restart needed
+- **Per-plugin config** — settings saved to `/sdcard/.keyforge/configs/<id>.conf`
+- **AX Manager module** — no APK needed, install as zip via AX Manager
 
 ## Install
 
-1. Install [Shizuku](https://shizuku.rikka.app/)
-2. Download `keyforge.apk` from [Releases](https://github.com/yoro1836/keyforge/releases)
-3. Install APK, open app, grant Shizuku permission
-4. Tap ▶ to start the daemon
-5. Add plugins from [keyforge-plugins](https://github.com/yoro1836/keyforge-plugins)
+1. Install [AX Manager](https://github.com/ktanon/AX-Manager)
+2. Download `keyforge.zip` from [Releases](https://github.com/yoro1836/keyforge/releases)
+3. Import as module in AX Manager
+4. Start the module, open WebUI
+5. Select your controller from the device dropdown
+6. Add plugins from [keyforge-plugins](https://github.com/yoro1836/keyforge-plugins)
 
 ## Plugin API
 
 ```lua
--- remap A to B
-local A, B = 304, 305
+-- deadzone: zero small stick movements
 return {
-  id = "swap_ab", name = "Swap A/B", version = "1.0.0", author = "me",
+  id = "deadzone", name = "Deadzone", version = "1.0.0", author = "me",
+  settings = {
+    { key = "dz_left",  label = "Left (‰)",  kind = "permille", default = "91", min = 0, max = 1000 },
+    { key = "dz_right", label = "Right (‰)", kind = "permille", default = "91", min = 0, max = 1000 },
+  },
   process = function(ev, cfg, pf)
-    if ev.kind == "button" and ev.code == A then
-      pf.emit(pf.EV_KEY, B, ev.pressed and 1 or 0)
-      pf.drop()
+    if ev.kind ~= "stick" then return ev end
+    local dz = tonumber(cfg["dz_" .. ev.side]) or 0
+    if dz <= 0 then return ev end
+    local thr = dz * 32767 / 1000
+    if ev.x * ev.x + ev.y * ev.y < thr * thr then
+      ev.x = 0; ev.y = 0
     end
     return ev
   end
 }
 ```
 
-See [docs/PLUGINS.md](docs/PLUGINS.md) for the full API reference.
+### Event types
+
+| `ev.kind` | Fields | Description |
+|-----------|--------|-------------|
+| `"stick"` | `x, y, side` | Analog stick (side = `"left"` or `"right"`) |
+| `"trigger"` | `value, side` | Trigger (value = 0..32767) |
+| `"button"` | `code, pressed` | Button (pressed = boolean) |
+
+### pf API
+
+| Function | Description |
+|----------|-------------|
+| `pf.emit(type, code, value [, hold_ms])` | Emit an evdev event |
+| `pf.drop()` | Suppress the current event |
+| `pf.log(msg)` | Write to daemon log |
+| `pf.EV_KEY` / `pf.EV_ABS` | Event type constants |
+| `pf.version` | API version string |
+| `pf.raw_x` / `pf.raw_y` | Raw stick values before processing |
+
+### Settings
+
+Plugins declare settings in their metadata. The WebUI renders toggles, sliders, and number inputs
+automatically. Supported kinds: `"toggle"`, `"permille"` (0-1000‰ with slider), `"number"`.
 
 ## Structure
 
 ```
-app/           Android app (Compose UI, Shizuku UserService)
-daemon/        Rust daemon (evdev → pipeline → uinput)
-docs/          Plugin API reference
+module/            AX Manager module files
+  keyforge.sh      Control script (start/stop/status/config/plugins/devices)
+  webroot/
+    index.html     Single-file WebUI (device selector, plugin manager, settings)
+  module.prop      AX Manager module manifest
+  service.sh       Module entry point
+daemon/            Rust daemon (evdev → pipeline → uinput)
+  src/
+    main.rs        Event loop (epoll, config polling, inotify hotplug)
+    core.rs        FFI, ioctl, Device, uinput setup
+    pipeline.rs    Event types, pipeline, Processor trait, EmitEvent
+    plugin/
+      mod.rs       Lua plugin loader, LuaProcessor
+      api.rs       pf API (emit, drop, log)
+    config.rs      Config loader (key=value format)
+```
+
+## Data
+
+All user data under `/sdcard/.keyforge/`:
+```
+/sdcard/.keyforge/
+  manifest.json         Plugin manifest (auto-generated)
+  plugins/*.lua         Installed plugin files
+  configs/<id>.conf     Per-plugin settings
+  keyforge.conf         Main config (VID, PID, plugin_dir)
 ```
 
 ## Build
 
 ```sh
-# daemon
-cd daemon && cargo build --release --target aarch64-linux-android
+# daemon (ARM64 Android)
+cd daemon
+cargo build --release --target aarch64-linux-android
 
-# apk (debug)
-./gradlew assembleDebug
-
-# apk (release, needs keystore)
-./gradlew assembleRelease -PKEYSTORE_FILE=keyforge.jks
+# module zip
+cd module
+zip keyforge.zip module.prop service.sh keyforge.sh keyforge webroot/index.html
 ```
-
-CI builds debug + release APKs on `workflow_dispatch`.
 
 ## License
 
