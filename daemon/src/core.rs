@@ -78,7 +78,7 @@ impl Default for UinputSetup {
     }
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct EpollEvent { pub events: u32, pub data: u64 }
 
@@ -118,15 +118,15 @@ pub const UI_SET_KEYBIT: u32  = iow(b'U', 101, mem::size_of::<i32>() as u8);
 pub const UI_SET_ABSBIT: u32  = iow(b'U', 103, mem::size_of::<i32>() as u8);
 
 pub const IN_NONBLOCK: i32 = 0o4000;
-pub const IN_CREATE: u32   = 0x0000_0100;
-pub const IN_DELETE: u32   = 0x0000_0200;
+pub const IN_CREATE: u32      = 0x0000_0100;
+pub const IN_DELETE: u32      = 0x0000_0200;
 
 pub const O_RDONLY: i32 = 0o0; pub const O_WRONLY: i32 = 0o1; pub const O_NONBLOCK: i32 = 0o4000;
 pub const EAGAIN: i32 = 11;
 
 pub const RAW_FILE_L: &str = "/tmp/keyforge_raw_L";
 pub const RAW_FILE_R: &str = "/tmp/keyforge_raw_R";
-pub const PLUGIN_MANIFEST: &str = "/data/user_de/0/com.android.shell/axeron/plugins/keyforge/manifest.json";
+pub const PLUGIN_MANIFEST: &str = "/sdcard/.keyforge/manifest.json";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -166,7 +166,7 @@ impl Device {
         }
     }
 
-    pub fn init_u(&mut self, _fd: i32, vid: u16) -> bool {
+    pub fn init_u(&mut self, fd: i32, vid: u16) -> bool {
         unsafe {
             let cpath = CString::new("/dev/uinput").unwrap();
             let u = open(cpath.as_ptr(), O_WRONLY | O_NONBLOCK, 0);
@@ -175,19 +175,44 @@ impl Device {
             do_ioctl(u, UI_SET_EVBIT, EV_ABS as usize);
             do_ioctl(u, UI_SET_EVBIT, EV_SYN as usize);
 
-            // key bits — register ALL keys for maximum plugin flexibility
-            for i in 0..KEY_CNT { do_ioctl(u, UI_SET_KEYBIT, i); }
-            // abs bits — register all axes
-            for i in 0..ABS_CNT as u32 {
-                do_ioctl(u, UI_SET_ABSBIT, i as usize);
-                let info = InputAbsInfo { minimum: -32767, maximum: 32767, ..Default::default() };
-                let mut s = UinputAbsSetup { code: i as u16, __pad: [0; 2], absinfo: info };
-                do_ioctl_ptr(u, UI_ABS_SETUP, &mut s);
+            // Copy KEY bits from physical device (same as memo.c)
+            let key_bytes = (KEY_CNT + 7) / 8;
+            let mut kbuf: Vec<u8> = vec![0u8; key_bytes];
+            if do_ioctl_ptr(fd, eviocgbit(EV_KEY as u8, key_bytes as u8), kbuf.as_mut_ptr()) >= 0 {
+                for i in 0..KEY_CNT {
+                    if (kbuf[i / 8] >> (i % 8)) & 1 != 0 {
+                        do_ioctl(u, UI_SET_KEYBIT, i);
+                    }
+                }
             }
+
+            // Copy ABS bits + absinfo from physical device (same as memo.c)
+            let abs_bytes = (ABS_CNT + 7) / 8;
+            let mut abuf: Vec<u8> = vec![0u8; abs_bytes];
+            if do_ioctl_ptr(fd, eviocgbit(EV_ABS as u8, abs_bytes as u8), abuf.as_mut_ptr()) >= 0 {
+                for i in 0..ABS_CNT as u32 {
+                    if (abuf[i as usize / 8] >> (i as usize % 8)) & 1 != 0 {
+                        let mut info = InputAbsInfo::default();
+                        if do_ioctl_ptr(fd, eviocgabs(i as u8), &mut info) >= 0 {
+                            do_ioctl(u, UI_SET_ABSBIT, i as usize);
+                            // Override stick axes range (same as memo.c)
+                            if i == ABS_X || i == ABS_Y || i == ABS_RX || i == ABS_RY {
+                                info.minimum = -32767;
+                                info.maximum = 32767;
+                                info.flat = 0;
+                                info.fuzz = 0;
+                            }
+                            let mut s = UinputAbsSetup { code: i as u16, __pad: [0; 2], absinfo: info };
+                            do_ioctl_ptr(u, UI_ABS_SETUP, &mut s);
+                        }
+                    }
+                }
+            }
+
             // identity
             let mut us = UinputSetup::default();
             us.id.bustype = BUS_USB; us.id.vendor = vid; us.id.product = 0x02d1; us.id.version = 1;
-            let label = b"KeyForge Virtual Device";
+            let label = b"KeyForge Virtual Controller";
             us.name[..label.len()].copy_from_slice(label);
 
             if do_ioctl_ptr(u, UI_DEV_SETUP, &mut us) < 0 || do_ioctl(u, UI_DEV_CREATE, 0) < 0 {
@@ -196,42 +221,6 @@ impl Device {
             self.ufd = u;
             true
         }
-    }
-
-    /// Scan input devices via getevent -i, return list for Lua API.
-    pub fn scan_input_devices() -> Vec<Vec<String>> {
-        let mut result = Vec::new();
-        if let Ok(output) = std::process::Command::new("getevent").arg("-i").output() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            let mut name = String::new();
-            let mut vid = String::from("0x0000");
-            let mut pid = String::from("0x0000");
-            let mut handler = String::new();
-            for line in raw.lines() {
-                if line.starts_with("add device") {
-                    if !name.is_empty() && !handler.is_empty() {
-                        result.push(vec![name.clone(), vid.clone(), pid.clone(), handler.clone()]);
-                    }
-                    handler = line.split('/').next_back().unwrap_or("").trim().to_string();
-                    name.clear(); vid = "0x0000".into(); pid = "0x0000".into();
-                } else if line.contains("name:") {
-                    if let Some(start) = line.find('"')
-                        && let Some(end) = line[start+1..].find('"') {
-                        name = line[start+1..start+1+end].to_string();
-                    }
-                } else if line.contains("vendor") {
-                    vid = line.split_whitespace().last().unwrap_or("0000").to_string();
-                    if !vid.starts_with("0x") { vid = format!("0x{}", vid); }
-                } else if line.contains("product") {
-                    pid = line.split_whitespace().last().unwrap_or("0000").to_string();
-                    if !pid.starts_with("0x") { pid = format!("0x{}", pid); }
-                }
-            }
-            if !name.is_empty() && !handler.is_empty() {
-                result.push(vec![name, vid, pid, handler]);
-            }
-        }
-        result
     }
 
     pub fn find_device(vid: u16, pid: u16) -> i32 {

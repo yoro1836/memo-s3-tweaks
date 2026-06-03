@@ -9,6 +9,13 @@ pub enum Event {
     Button { code: u16, pressed: bool },
 }
 
+impl Event {
+    pub fn x(&self) -> i32 { match self { Event::Stick { x, .. } => *x, _ => 0 } }
+    pub fn y(&self) -> i32 { match self { Event::Stick { y, .. } => *y, _ => 0 } }
+    pub fn value(&self) -> i32 { match self { Event::Trigger { value, .. } => *value, _ => 0 } }
+    pub fn pressed(&self) -> bool { match self { Event::Button { pressed, .. } => *pressed, _ => false } }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Side { Left, Right }
 

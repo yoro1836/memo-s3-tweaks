@@ -6,7 +6,8 @@ BIN="$MODDIR/keyforge"
 CONF="$MODDIR/keyforge.conf"
 PIDFILE="$MODDIR/keyforge.pid"
 LOG="$MODDIR/keyforge.log"
-MANIFEST="$MODDIR/manifest.json"
+MANIFEST="/sdcard/.keyforge/manifest.json"
+PLUGIN_DIR=/sdcard/.keyforge/plugins
 
 log() { echo "[keyforge] $(date '+%H:%M:%S') $*" >> "$LOG"; }
 
@@ -23,7 +24,7 @@ ensure_conf() {
 # keyforge configuration
 VID=0x045e
 PID=0x028e
-PLUGIN_DIR=$MODDIR/plugins
+PLUGIN_DIR=/sdcard/.keyforge/plugins
 EOF
     fi
 }
@@ -31,7 +32,7 @@ EOF
 case "${1:-}" in
     start)
         ensure_conf
-        mkdir -p $MODDIR/plugins 2>/dev/null
+        mkdir -p $MODDIR/plugins /sdcard/.keyforge/plugins /sdcard/.keyforge/configs 2>/dev/null
         if is_running; then echo "keyforge: already running (pid $(cat "$PIDFILE"))"; exit 0; fi
         if [ ! -f "$BIN" ]; then echo "keyforge: FATAL - binary not found: $BIN"; exit 1; fi
         chmod 755 "$BIN" 2>/dev/null || true
@@ -95,7 +96,6 @@ case "${1:-}" in
         ;;
 
     plugins)
-        PLUGIN_DIR=$MODDIR/plugins
         mkdir -p "$PLUGIN_DIR" 2>/dev/null
         case "${2:-}" in
             list) printf '{"plugins":['; _first=1; for f in "$PLUGIN_DIR"/*.lua; do [ -f "$f" ] || continue; _bn=$(basename "$f" .lua); [ "$_first" = "1" ] && _first=0 || printf ','; printf '"%s"' "$_bn"; done; printf ']}\n' ;;

@@ -39,29 +39,5 @@ pub fn build_pf(
         Ok(())
     })?)?;
 
-    // pf.scan_devices() -> {{name, vid, pid, handler}, ...}
-    let device_list = crate::core::Device::scan_input_devices();
-    pf.set("scan_devices", lua.create_function(move |_, ()| {
-        Ok(device_list.clone())
-    })?)?;
-
-    // pf.set_config(key, value) -> write to daemon config
-    let conf_path = "/data/user_de/0/com.android.shell/axeron/plugins/keyforge/keyforge.conf".to_string();
-    pf.set("set_config", lua.create_function(move |_, (key, value): (String, String)| {
-        let mut lines: Vec<String> = if let Ok(s) = std::fs::read_to_string(&conf_path) {
-            s.lines().map(|l| l.to_string()).collect()
-        } else { Vec::new() };
-        let mut found = false;
-        for line in &mut lines {
-            if line.starts_with(&format!("{}=", key)) {
-                *line = format!("{}={}", key, value);
-                found = true; break;
-            }
-        }
-        if !found { lines.push(format!("{}={}", key, value)); }
-        let _ = std::fs::write(&conf_path, lines.join("\n") + "\n");
-        Ok(true)
-    })?)?;
-
     Ok(pf)
 }

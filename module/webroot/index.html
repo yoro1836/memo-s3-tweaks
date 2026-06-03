@@ -54,11 +54,21 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;heigh
 
 <div class="card">
   <div class="row">
+    <span class="dim">Device</span>
+    <span class="grow"></span>
+    <button class="btn btn-o btn-xs" onclick="loadDevices()">Scan</button>
+  </div>
+  <div class="row"><select id="devSel" onchange="selectDevice()"><option value="">No device selected</option></select></div>
+</div>
+
+<div class="card">
+  <div class="row">
     <span class="dim">Plugins</span>
     <span class="grow"></span>
     <input type="file" id="filePick" accept=".lua" style="display:none" onchange="onFile()">
     <button class="btn btn-a btn-sm" onclick="document.getElementById('filePick').click()">+ Add</button>
     <button class="btn btn-a btn-sm" id="saveBtn" onclick="saveAll()">Save</button>
+    <button class="btn btn-o btn-sm" onclick="refresh()">↻</button>
   </div>
   <div id="pluginList" class="mt4"></div>
   <div id="installed" class="mt4"></div>
@@ -79,16 +89,15 @@ function ub(){var t=dirty?'Save *':'Save';document.getElementById('saveBtn').tex
 
 function exec(cmd){
   try{
-    var r=Axeron.exec(cmd);
-    var o=JSON.parse(r);
-    return o.stdout||'';
+    if(typeof kernelsu!=='undefined'&&typeof kernelsu.exec==='function')return kernelsu.exec(cmd)||'';
+    if(typeof ksu!=='undefined'&&typeof ksu.exec==='function')return ksu.exec(cmd)||'';
   }catch(e){}
   return'';
 }
 
 function showLog(){
   var v=document.getElementById('logView');
-  if(v.style.display==='none'){v.style.display='block';exec(SCR+' log').then(function(t){v.textContent=t;});}
+  if(v.style.display==='none'){v.style.display='block';v.textContent=exec(SCR+' log');}
   else{v.style.display='none';}
 }
 
@@ -105,15 +114,39 @@ function checkStatus(){
 function saveAll(){
   var cs=document.querySelectorAll('.plg');
   for(var i=0;i<cs.length;i++){
+    var id=cs[i].id.replace('plg-','');
+    var lines=[];
     var is=cs[i].querySelectorAll('input[data-k]');
     for(var j=0;j<is.length;j++){
       var inp=is[j],val=inp.type==='checkbox'?(inp.checked?'1':'0'):inp.value;
-      exec(SCR+' config set '+inp.dataset.k+' '+val);
+      lines.push(inp.dataset.k+'='+val);
     }
+    exec('mkdir -p /sdcard/.keyforge/configs && echo '+btoa(lines.join('\n'))+' | base64 -d > /sdcard/.keyforge/configs/'+id+'.conf');
   }
   dirty=false;ub();toast('Saved');
 }
 
+var devs=[];
+function loadDevices(){
+  var o=exec(SCR+' devices'),h='<option value="">No device selected</option>';
+  try{devs=JSON.parse(o).devices||[];}catch(e){devs=[];}
+  // read current VID/PID from config
+  var cv=exec(SCR+' config get VID').trim(),cp=exec(SCR+' config get PID').trim();
+  var sel=cv+'_'+cp;
+  for(var i=0;i<devs.length;i++){
+    var d=devs[i],val=d.vid+'_'+d.pid;
+    h+='<option value="'+val+'">'+esc(d.name)+' ('+esc(d.vid)+':'+esc(d.pid)+')</option>';
+  }
+  var s=document.getElementById('devSel');
+  s.innerHTML=h;s.value=sel;
+}
+function selectDevice(){
+  var v=document.getElementById('devSel').value.split('_');
+  if(v.length!==2||!v[0])return;
+  exec(SCR+' config set VID '+v[0]+' && '+SCR+' config set PID '+v[1]);
+  toast('Device: '+v[0]+':'+v[1]+' — restart daemon');
+  setTimeout(function(){daemon('restart');},500);
+}
 function loadManifest(){
   var o=exec(SCR+' manifest'),h='';
   try{
@@ -121,21 +154,25 @@ function loadManifest(){
     if(!pl.length){h='<span class="dim">No plugins loaded</span>';}
     for(var i=0;i<pl.length;i++){
       var p=pl[i],cls=p.enabled?'on':'off';
+      // Load saved per-plugin config
+      var sv={};
+      var cr=exec('cat /sdcard/.keyforge/configs/'+p.id+'.conf 2>/dev/null');
+      if(cr){var ls=cr.split('\n');for(var k=0;k<ls.length;k++){var eq=ls[k].indexOf('=');if(eq>0)sv[ls[k].substring(0,eq)]=ls[k].substring(eq+1);}}
       h+='<div class="plg '+cls+'" id="plg-'+esc(p.id)+'">';
       h+='<div class="row"><strong style="font-size:.85rem">'+esc(p.name)+'</strong><span class="dim">v'+esc(p.version)+'</span><span class="grow"></span>';
       h+='<span class="tgl"><input type="checkbox" id="tgl-'+esc(p.id)+'"'+(p.enabled?' checked':'')+' onchange="tglP(\''+esc(p.id)+'\',this.checked)"><label for="tgl-'+esc(p.id)+'"></label></span>';
       h+='</div>';
       var ss=p.settings||[];
       for(var j=0;j<ss.length;j++){
-        var s=ss[j];
+        var s=ss[j],val=sv.hasOwnProperty(s.key)?sv[s.key]:s.default;
         h+='<div class="row"><span style="font-size:.76rem;min-width:52px;color:var(--dim)">'+esc(s.label)+'</span>';
         if(s.kind==='toggle'){
-          h+='<span class="tgl"><input type="checkbox" data-k="'+esc(s.key)+'" id="st-'+esc(s.key)+'"'+(s.default==='1'?' checked':'')+' onchange="dirty=true;ub()"><label for="st-'+esc(s.key)+'"></label></span>';
+          h+='<span class="tgl"><input type="checkbox" data-k="'+esc(s.key)+'" id="st-'+esc(s.key)+'"'+(val==='1'?' checked':'')+' onchange="dirty=true;ub()"><label for="st-'+esc(s.key)+'"></label></span>';
         }else if(s.kind==='permille'){
-          h+='<input type="number" class="inp" data-k="'+esc(s.key)+'" value="'+esc(s.default)+'" min="'+(s.min||0)+'" max="'+(s.max||1000)+'" onchange="this.nextElementSibling.value=this.value;dirty=true;ub()">';
-          h+='<input type="range" class="grow" data-k="'+esc(s.key)+'" min="'+(s.min||0)+'" max="'+(s.max||1000)+'" value="'+esc(s.default)+'" oninput="this.previousElementSibling.value=this.value;dirty=true;ub()">';
+          h+='<input type="number" class="inp" data-k="'+esc(s.key)+'" value="'+esc(val)+'" min="'+(s.min||0)+'" max="'+(s.max||1000)+'" onchange="this.nextElementSibling.value=this.value;dirty=true;ub()">';
+          h+='<input type="range" class="grow" data-k="'+esc(s.key)+'" min="'+(s.min||0)+'" max="'+(s.max||1000)+'" value="'+esc(val)+'" oninput="this.previousElementSibling.value=this.value;dirty=true;ub()">';
         }else{
-          h+='<input type="number" class="inp" data-k="'+esc(s.key)+'" value="'+esc(s.default)+'" onchange="dirty=true;ub()">';
+          h+='<input type="number" class="inp" data-k="'+esc(s.key)+'" value="'+esc(val)+'" onchange="dirty=true;ub()">';
         }
         h+='</div>';
       }
@@ -152,6 +189,11 @@ function tglP(id,c){
   if(e){e.classList.toggle('on',c);e.classList.toggle('off',!c);}
 }
 
+function refresh(){
+  exec(SCR+' config set _reload '+Date.now());
+  toast('Refreshing...');
+  setTimeout(function(){rfI();loadManifest();},2000);
+}
 function onFile(){
   var fp=document.getElementById('filePick'),f=fp.files[0];if(!f)return;
   if(f.name.slice(-4)!=='.lua'){toast('Only .lua files');fp.value='';return;}
@@ -159,8 +201,8 @@ function onFile(){
   r.onload=function(){
     var a=new Uint8Array(r.result),b64='';for(var i=0;i<a.length;i++)b64+=String.fromCharCode(a[i]);
     b64=btoa(b64);
-    exec('echo '+b64+' | base64 -d > '+MODROOT+'/plugins/'+f.name+' && '+SCR+' restart');
-    toast('Installed: '+f.name);setTimeout(function(){rfI();loadManifest();},1500);
+    exec('mkdir -p /sdcard/.keyforge/plugins && echo '+b64+' | base64 -d > /sdcard/.keyforge/plugins/'+f.name);
+    refresh();
   };r.readAsArrayBuffer(f);fp.value='';
 }
 function rmP(id){exec(SCR+' plugins remove '+id);toast('Removed '+id);setTimeout(function(){rfI();loadManifest();},1500);}
@@ -174,8 +216,8 @@ function rfI(){
   document.getElementById('installed').innerHTML=h;
 }
 
-loadManifest();rfI();checkStatus();
-setInterval(checkStatus,8000);setInterval(loadManifest,30000);
+loadDevices();loadManifest();rfI();checkStatus();
+setInterval(checkStatus,8000);setInterval(loadManifest,30000);setInterval(loadDevices,60000);
 </script>
 </body>
 </html>

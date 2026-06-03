@@ -30,22 +30,31 @@ pub struct LuaProcessor {
     pub meta: PluginMeta,
     lua: &'static Lua,
     process_fn: Function,
+    /// Per-plugin config loaded from /sdcard/.keyforge/configs/<id>.conf
+    plugin_config: HashMap<String, String>,
 }
 
 impl Processor for LuaProcessor {
     fn id(&self) -> &str { &self.meta.id }
 
     fn process(&self, event: &mut Event, ctx: &mut Ctx) {
-        let table = match build_event_table(self.lua, event) { Ok(t) => t, Err(_) => return };
-        let cfg = match build_cfg_table(self.lua, &ctx.settings) { Ok(t) => t, Err(_) => return };
+        let table = match build_event_table(self.lua, event) { Ok(t) => t, Err(e) => { eprintln!("keyforge[{}]: build_event_table: {}", self.meta.id, e); return; } };
+        // Merge global config with per-plugin config (per-plugin takes priority)
+        let mut merged = ctx.settings.clone();
+        for (k, v) in &self.plugin_config { merged.insert(k.clone(), v.clone()); }
+        let cfg = match build_cfg_table(self.lua, &merged) { Ok(t) => t, Err(e) => { eprintln!("keyforge[{}]: build_cfg_table: {}", self.meta.id, e); return; } };
 
         let emits_buf: Arc<Mutex<Vec<EmitEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let drop_flag: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let raw_x = match event { Event::Stick { x, .. } => *x, _ => 0 };
         let raw_y = match event { Event::Stick { y, .. } => *y, _ => 0 };
-        let pf = match api::build_pf(self.lua, &emits_buf, &drop_flag, raw_x, raw_y) { Ok(t) => t, Err(_) => return };
+        let pf = match api::build_pf(self.lua, &emits_buf, &drop_flag, raw_x, raw_y) { Ok(t) => t, Err(e) => { eprintln!("keyforge[{}]: build_pf: {}", self.meta.id, e); return; } };
 
         let result: mlua::Result<Value> = self.process_fn.call::<Value>((table, cfg, pf));
+        match &result {
+            Err(e) => eprintln!("keyforge[{}]: process error: {}", self.meta.id, e),
+            Ok(val) => if val.as_table().is_none() { eprintln!("keyforge[{}]: process returned non-table: {:?}", self.meta.id, val); }
+        }
         if let Ok(val) = result
             && let Some(t) = val.as_table()
         {
@@ -73,13 +82,18 @@ fn build_cfg_table(lua: &Lua, settings: &HashMap<String, String>) -> mlua::Resul
     Ok(t)
 }
 
+fn lua_to_i32(t: &Table, key: &str) -> Option<i32> {
+    if let Ok(v) = t.get::<i32>(key) { return Some(v); }
+    if let Ok(v) = t.get::<f64>(key) { return Some(v as i32); }
+    None
+}
 fn apply_result(event: &mut Event, t: &Table) {
     match event {
         Event::Stick { x, y, .. } => {
-            if let Ok(v) = t.get::<i32>("x") { *x = v; }
-            if let Ok(v) = t.get::<i32>("y") { *y = v; }
+            if let Some(v) = lua_to_i32(t, "x") { *x = v; }
+            if let Some(v) = lua_to_i32(t, "y") { *y = v; }
         }
-        Event::Trigger { value, .. } => { if let Ok(v) = t.get::<i32>("value") { *value = v; } }
+        Event::Trigger { value, .. } => { if let Some(v) = lua_to_i32(t, "value") { *value = v; } }
         Event::Button { pressed, .. } => { if let Ok(v) = t.get::<bool>("pressed") { *pressed = v; } }
     }
 }
@@ -118,12 +132,30 @@ pub fn load_plugins(
                 let _: mlua::Result<()> = init_fn.call((c, p));
             }
         }
+        // Load per-plugin config
+        let mut plugin_config = HashMap::new();
+        let conf_path = format!("/sdcard/.keyforge/configs/{}.conf", id);
+        if let Ok(conf_raw) = fs::read_to_string(&conf_path) {
+            for line in conf_raw.lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    plugin_config.insert(k.trim().to_string(), v.trim().to_string());
+                }
+            }
+        }
         let meta = PluginMeta { id: id.clone(), name, version, author, description, enabled, settings };
-        if meta.enabled { pipeline.add(Box::new(LuaProcessor { meta: meta.clone(), lua, process_fn })); }
+        if meta.enabled {
+            eprintln!("keyforge: plugin loaded: {} ({} config keys)", id, plugin_config.len());
+            pipeline.add(Box::new(LuaProcessor { meta: meta.clone(), lua, process_fn, plugin_config }));
+        } else {
+            eprintln!("keyforge: plugin disabled: {}", id);
+        }
         metas.push(meta);
     }
     let m = Manifest { plugins: metas.clone() };
-    if let Ok(json) = serde_json::to_string_pretty(&m) { let _ = fs::write(PLUGIN_MANIFEST, json); }
+    if let Ok(json) = serde_json::to_string_pretty(&m) {
+        if let Err(e) = fs::write(PLUGIN_MANIFEST, &json) { eprintln!("keyforge: manifest write error: {}", e); }
+    }
+    eprintln!("keyforge: {} plugins loaded", metas.len());
     metas
 }
 
