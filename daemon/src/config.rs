@@ -14,7 +14,7 @@ impl Config {
     pub fn load(path: &Path) -> Self {
         let mut cfg = Config {
             vid: 0x045e, pid: 0x028e,
-            plugin_dir: "/data/user_de/0/com.android.shell/axeron/plugins/keyforge/plugins".into(),
+            plugin_dir: "/sdcard/.keyforge/plugins".into(),
             values: HashMap::new(),
         };
         if let Ok(file) = fs::File::open(path) {
